@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Match the app's own backgrounds so launch has no white flash. -->
+    <color name="huddle_paper">#F6F3EE</color>
+    <color name="huddle_night">#0D0F17</color>
+</resources>

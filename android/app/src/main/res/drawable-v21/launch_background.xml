@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash for Android 11 and older: the ball on the app's background. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="?android:colorBackground" />
+    <item android:width="96dp" android:height="96dp" android:gravity="center">
+        <bitmap android:gravity="fill" android:src="@mipmap/ic_launcher" />
+    </item>
+</layer-list>
