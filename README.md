@@ -6,15 +6,32 @@
 
 *Take roll call courtside, one-handed, in under 60 seconds.*
 
+[![Download APK](https://img.shields.io/badge/📥_Download-huddle.apk-brightgreen?style=for-the-badge&logo=android)](https://github.com/pranav16121/Huddle/raw/main/releases/huddle.apk)
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?style=for-the-badge&logo=flutter&logoColor=white)](https://flutter.dev)
 [![Dart](https://img.shields.io/badge/Dart-3.10+-0175C2?style=for-the-badge&logo=dart&logoColor=white)](https://dart.dev)
 [![Database](https://img.shields.io/badge/Database-SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-orange?style=for-the-badge)](LICENSE)
 
 ---
 
+### 📲 [Click Here to Download `huddle.apk`](https://github.com/pranav16121/Huddle/raw/main/releases/huddle.apk)
+
+*Install and test Huddle instantly on any Android device!*
+
 </div>
+
+---
+
+## 🚀 Quick Download & Mobile Installation
+
+Want to test Huddle on your Android phone immediately without building from source?
+
+1. **Download the APK**: Tap the link below to download `huddle.apk` directly to your phone:
+   👉 **[Download `huddle.apk` (Latest Release)](https://github.com/pranav16121/Huddle/raw/main/releases/huddle.apk)** *(or locate [`releases/huddle.apk`](releases/huddle.apk) in this repository)*.
+2. **Enable Installation**: If prompted, allow your browser or file manager permission to *"Install apps from unknown sources"*.
+3. **Install & Launch**: Tap the downloaded `huddle.apk` file to install and start taking attendance courtside!
+
+---
 
 ## 🌟 Overview
 
@@ -84,7 +101,7 @@ lib/
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Building From Source
 
 ### Prerequisites
 
