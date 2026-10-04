@@ -4,6 +4,7 @@ import 'package:attendance/data/auto_backup.dart';
 import 'package:attendance/data/backup.dart';
 import 'package:attendance/data/models.dart';
 import 'package:attendance/data/store.dart';
+import 'package:excel/excel.dart' show Excel, IntCellValue;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures.dart';
@@ -43,9 +44,7 @@ void main() {
     final session = store.createSession(
       squadId: squad.id,
       date: clock,
-      statuses: {
-        for (final p in players) p.id: AttendanceStatus.absent,
-      },
+      statuses: {for (final p in players) p.id: AttendanceStatus.absent},
     );
     store.setStatus(session.id, players[0].id, AttendanceStatus.present);
     store.setStatus(session.id, players[1].id, AttendanceStatus.late);
@@ -196,52 +195,210 @@ void main() {
     );
   });
 
-  test('register CSV has only Present or Absent per player per day', () {
-    final squad = store.addSquad(name: 'U10', colorIndex: 0);
-    final jo = store.addPlayer(name: 'Smith, Jo', squadIds: {squad.id});
-    final ava = store.addPlayer(name: 'Ava', squadIds: {squad.id}, jersey: '7');
-    final ben = store.addPlayer(name: 'Ben', squadIds: {squad.id});
-    final cara = store.addPlayer(name: 'Cara', squadIds: {squad.id});
-    store.createSession(
-      squadId: squad.id,
-      date: clock.subtract(const Duration(days: 3)),
-      statuses: {
-        jo.id: AttendanceStatus.present,
-        ava.id: AttendanceStatus.absent,
-        ben.id: AttendanceStatus.late,
-        cara.id: AttendanceStatus.excused,
-      },
-    );
-    // Two sessions on the same day make one column: present at either
-    // counts as present that day.
-    store.createSession(
-      squadId: squad.id,
-      date: clock,
-      statuses: {
-        jo.id: AttendanceStatus.absent,
-        ava.id: AttendanceStatus.absent,
-      },
-    );
-    store.createSession(
-      squadId: squad.id,
-      date: clock,
-      statuses: {
-        jo.id: AttendanceStatus.absent,
-        ava.id: AttendanceStatus.present,
-      },
-    );
-    // Joined today: added to today's register only.
-    store.addPlayer(name: 'Dev', squadIds: {squad.id});
+  group('attendance workbook', () {
+    // Sheet name -> rows of cell values, with trailing empty cells dropped.
+    Map<String, List<List<Object?>>> read(List<int>? bytes) => {
+      for (final MapEntry(key: name, value: sheet) in Excel.decodeBytes(
+        bytes!,
+      ).tables.entries)
+        name: [
+          for (final row in sheet.rows)
+            [
+              for (final c in row)
+                switch (c?.value) {
+                  IntCellValue(:final value) => value,
+                  final v => v?.toString(),
+                },
+            ]..length = row.lastIndexWhere((c) => c?.value != null) + 1,
+        ],
+    };
 
-    expect(buildRegisterCsv(store, squad).split('\n'), [
-      'Player,2026-09-29,2026-10-02',
-      'Ava,Absent,Present',
-      'Ben,Present,',
-      'Cara,Absent,',
-      'Dev,,Absent',
-      '"Smith, Jo",Present,Absent',
-      '',
-    ]);
+    test('has a sheet per month with only P or A per player per day', () {
+      final squad = store.addSquad(name: 'U10', colorIndex: 0);
+      final jo = store.addPlayer(name: 'Smith, Jo', squadIds: {squad.id});
+      final ava = store.addPlayer(
+        name: 'Ava',
+        squadIds: {squad.id},
+        jersey: '7',
+      );
+      final ben = store.addPlayer(name: 'Ben', squadIds: {squad.id});
+      final cara = store.addPlayer(name: 'Cara', squadIds: {squad.id});
+      // The only September session still gets its own sheet. Late and
+      // excused are exported as A.
+      store.createSession(
+        squadId: squad.id,
+        date: clock.subtract(const Duration(days: 3)),
+        statuses: {
+          jo.id: AttendanceStatus.present,
+          ava.id: AttendanceStatus.absent,
+          ben.id: AttendanceStatus.late,
+          cara.id: AttendanceStatus.excused,
+        },
+      );
+      // Two sessions on the same day make one column: present at either
+      // counts as present that day.
+      store.createSession(
+        squadId: squad.id,
+        date: clock,
+        statuses: {
+          jo.id: AttendanceStatus.absent,
+          ava.id: AttendanceStatus.absent,
+        },
+      );
+      store.createSession(
+        squadId: squad.id,
+        date: clock,
+        statuses: {
+          jo.id: AttendanceStatus.absent,
+          ava.id: AttendanceStatus.present,
+        },
+      );
+      // Recorded later for an earlier day: columns are still oldest first.
+      store.createSession(
+        squadId: squad.id,
+        date: clock.subtract(const Duration(days: 1)),
+        statuses: {
+          jo.id: AttendanceStatus.present,
+          ava.id: AttendanceStatus.late,
+          ben.id: AttendanceStatus.present,
+          cara.id: AttendanceStatus.excused,
+        },
+      );
+      // Joined today: added to today's register only.
+      store.addPlayer(name: 'Dev', squadIds: {squad.id});
+
+      expect(read(buildAttendanceWorkbook(store)), {
+        'September 2026': [
+          ['ATTENDANCE REPORT'],
+          ['September 2026'],
+          [],
+          ['Player', '29/09/2026', 'TOTAL ATTENDED'],
+          ['Ava', 'A', 0],
+          ['Ben', 'A', 0],
+          ['Cara', 'A', 0],
+          ['Dev', null, 0],
+          ['Smith, Jo', 'P', 1],
+        ],
+        'October 2026': [
+          ['ATTENDANCE REPORT'],
+          ['October 2026'],
+          [],
+          ['Player', '01/10/2026', '02/10/2026', 'TOTAL ATTENDED'],
+          ['Ava', 'A', 'P', 1],
+          ['Ben', 'P', null, 1],
+          ['Cara', 'A', null, 0],
+          ['Dev', null, 'A', 0],
+          ['Smith, Jo', 'P', 'A', 1],
+        ],
+      });
+    });
+
+    test('exporting again picks up new sessions without repeating days', () {
+      final squad = store.addSquad(name: 'U10', colorIndex: 0);
+      final a = store.addPlayer(name: 'Aarav', squadIds: {squad.id});
+      final b = store.addPlayer(name: 'Aashi', squadIds: {squad.id});
+      store.createSession(
+        squadId: squad.id,
+        date: clock,
+        statuses: {a.id: AttendanceStatus.present, b.id: AttendanceStatus.late},
+      );
+      expect(read(buildAttendanceWorkbook(store)), {
+        'October 2026': [
+          ['ATTENDANCE REPORT'],
+          ['October 2026'],
+          [],
+          ['Player', '02/10/2026', 'TOTAL ATTENDED'],
+          ['Aarav', 'P', 1],
+          ['Aashi', 'A', 0],
+        ],
+      });
+
+      clock = DateTime(2026, 10, 10, 16, 30);
+      store.createSession(
+        squadId: squad.id,
+        date: clock,
+        statuses: {
+          a.id: AttendanceStatus.absent,
+          b.id: AttendanceStatus.present,
+        },
+      );
+      clock = DateTime(2026, 11, 3, 16, 30);
+      store.createSession(
+        squadId: squad.id,
+        date: clock,
+        statuses: {
+          a.id: AttendanceStatus.present,
+          b.id: AttendanceStatus.excused,
+        },
+      );
+      expect(read(buildAttendanceWorkbook(store)), {
+        'October 2026': [
+          ['ATTENDANCE REPORT'],
+          ['October 2026'],
+          [],
+          ['Player', '02/10/2026', '10/10/2026', 'TOTAL ATTENDED'],
+          ['Aarav', 'P', 'A', 1],
+          ['Aashi', 'A', 'P', 1],
+        ],
+        'November 2026': [
+          ['ATTENDANCE REPORT'],
+          ['November 2026'],
+          [],
+          ['Player', '03/11/2026', 'TOTAL ATTENDED'],
+          ['Aarav', 'P', 1],
+          ['Aashi', 'A', 0],
+        ],
+      });
+    });
+
+    test('with several squads, each gets its own monthly sheets', () {
+      Squad squad(String name) {
+        clock = clock.add(const Duration(minutes: 1));
+        return store.addSquad(name: name, colorIndex: 0);
+      }
+
+      final squads = [
+        squad('U10'),
+        squad('U12/U14'),
+        squad('Under Fourteen Development'),
+        squad('U10'),
+      ];
+      squad('No sessions yet');
+      for (final s in squads) {
+        final p = store.addPlayer(name: 'Aarav', squadIds: {s.id});
+        store.createSession(
+          squadId: s.id,
+          date: clock,
+          statuses: {p.id: AttendanceStatus.present},
+        );
+      }
+      store.createSession(
+        squadId: squads.first.id,
+        date: clock.subtract(const Duration(days: 3)),
+        statuses: {},
+      );
+
+      final sheets = read(buildAttendanceWorkbook(store));
+      expect(sheets.keys, [
+        'U10 - September 2026',
+        'U10 - October 2026',
+        'U12 U14 - October 2026',
+        'Under Fourteen D - October 2026',
+        'U10 2 - October 2026',
+      ]);
+      expect(sheets['U12 U14 - October 2026'], [
+        ['ATTENDANCE REPORT'],
+        ['October 2026'],
+        [],
+        ['Player', '02/10/2026', 'TOTAL ATTENDED'],
+        ['Aarav', 'P', 1],
+      ]);
+    });
+
+    test('is not built when there are no sessions', () {
+      store.addSquad(name: 'U10', colorIndex: 0);
+      expect(buildAttendanceWorkbook(store), isNull);
+    });
   });
 
   test('demo data is realistic', () {
@@ -256,55 +413,60 @@ void main() {
   });
 
   group('demo cleanup', () {
-    test('removes the sample season but keeps everything the coach added',
-        () async {
-      final demo = buildDemoSnapshot(clock)..settings['onboarded'] = 'true';
-      await repo.replaceAll(demo);
-      store = HuddleStore(repo, await repo.load(), clock: () => clock);
-      expect(store.hasDemoData, isTrue);
+    test(
+      'removes the sample season but keeps everything the coach added',
+      () async {
+        final demo = buildDemoSnapshot(clock)..settings['onboarded'] = 'true';
+        await repo.replaceAll(demo);
+        store = HuddleStore(repo, await repo.load(), clock: () => clock);
+        expect(store.hasDemoData, isTrue);
 
-      // The coach used a demo squad for real: added a kid, took a roll call.
-      final juniors = store.squad('demo-juniors')!;
-      final real = store.addPlayer(name: 'Real Kid', squadIds: {juniors.id});
-      final session = store.createSession(
-        squadId: juniors.id,
-        date: clock,
-        statuses: {
-          real.id: AttendanceStatus.present,
-          'demo-juniors-1': AttendanceStatus.present,
-        },
-      );
-      final ownSquad = store.addSquad(name: 'My U12', colorIndex: 3);
+        // The coach used a demo squad for real: added a kid, took a roll call.
+        final juniors = store.squad('demo-juniors')!;
+        final real = store.addPlayer(name: 'Real Kid', squadIds: {juniors.id});
+        final session = store.createSession(
+          squadId: juniors.id,
+          date: clock,
+          statuses: {
+            real.id: AttendanceStatus.present,
+            'demo-juniors-1': AttendanceStatus.present,
+          },
+        );
+        final ownSquad = store.addSquad(name: 'My U12', colorIndex: 3);
 
-      final copies = <String>[];
-      store.beforeDestructive = (before, reason) async => copies.add(reason);
-      final removed = await store.removeDemoData();
-      expect(removed, greaterThan(20));
-      expect(copies, ['remove-demo']);
+        final copies = <String>[];
+        store.beforeDestructive = (before, reason) async => copies.add(reason);
+        final removed = await store.removeDemoData();
+        expect(removed, greaterThan(20));
+        expect(copies, ['remove-demo']);
 
-      final again = await reload();
-      expect(again.hasDemoData, isFalse);
-      expect(again.allPlayers.map((p) => p.name), ['Real Kid']);
-      // The demo squad they actually used stays; the unused one is gone.
-      expect(again.allSquads.map((s) => s.id), {juniors.id, ownSquad.id});
-      expect(again.sessions.single.id, session.id);
-      expect(again.statusOf(session.id, real.id), AttendanceStatus.present);
-      expect(again.recordsOf(session.id).keys, [real.id]);
-      expect(again.onboarded, isTrue);
-    });
+        final again = await reload();
+        expect(again.hasDemoData, isFalse);
+        expect(again.allPlayers.map((p) => p.name), ['Real Kid']);
+        // The demo squad they actually used stays; the unused one is gone.
+        expect(again.allSquads.map((s) => s.id), {juniors.id, ownSquad.id});
+        expect(again.sessions.single.id, session.id);
+        expect(again.statusOf(session.id, real.id), AttendanceStatus.present);
+        expect(again.recordsOf(session.id).keys, [real.id]);
+        expect(again.onboarded, isTrue);
+      },
+    );
 
-    test('with nothing of their own, the coach gets the setup screen', () async {
-      final demo = buildDemoSnapshot(clock)..settings['onboarded'] = 'true';
-      await repo.replaceAll(demo);
-      store = HuddleStore(repo, await repo.load(), clock: () => clock);
-      await store.removeDemoData();
-      final again = await reload();
-      expect(again.allSquads, isEmpty);
-      expect(again.allPlayers, isEmpty);
-      expect(again.sessions, isEmpty);
-      expect(again.onboarded, isFalse);
-      expect(again.hasDemoData, isFalse);
-    });
+    test(
+      'with nothing of their own, the coach gets the setup screen',
+      () async {
+        final demo = buildDemoSnapshot(clock)..settings['onboarded'] = 'true';
+        await repo.replaceAll(demo);
+        store = HuddleStore(repo, await repo.load(), clock: () => clock);
+        await store.removeDemoData();
+        final again = await reload();
+        expect(again.allSquads, isEmpty);
+        expect(again.allPlayers, isEmpty);
+        expect(again.sessions, isEmpty);
+        expect(again.onboarded, isFalse);
+        expect(again.hasDemoData, isFalse);
+      },
+    );
 
     test('runs once: not again on the next launch, but again if an old demo '
         'backup is restored', () async {
@@ -381,7 +543,9 @@ void main() {
         'delete-squad',
       });
       // The copy made before deleting the player still has everything.
-      final beforePlayer = safety.firstWhere((b) => b.reason == 'delete-player');
+      final beforePlayer = safety.firstWhere(
+        (b) => b.reason == 'delete-player',
+      );
       final snap = await beforePlayer.read();
       expect(snap.players.single.name, 'Maya');
       expect(snap.sessions, hasLength(1));
@@ -405,8 +569,9 @@ void main() {
       for (var i = 0; i < AutoBackups.keepSafety + 5; i++) {
         await backups.safety(store.snapshot(), 'delete-session');
       }
-      final safety = (await backups.list())
-          .where((b) => b.kind == AutoBackupKind.safety);
+      final safety = (await backups.list()).where(
+        (b) => b.kind == AutoBackupKind.safety,
+      );
       expect(safety, hasLength(AutoBackups.keepSafety));
     });
   });

@@ -1,7 +1,17 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:excel/excel.dart'
+    show
+        CellIndex,
+        CellStyle,
+        CellValue,
+        Excel,
+        HorizontalAlign,
+        IntCellValue,
+        TextCellValue;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/widgets.dart' show StringCharacters;
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -26,64 +36,127 @@ Snapshot decodeBackup(String text) {
   return Snapshot.fromJson(json.cast<String, Object?>());
 }
 
-String _csvCell(Object? value) {
-  final s = '${value ?? ''}';
-  if (s.contains(RegExp(r'[",\n\r]'))) return '"${s.replaceAll('"', '""')}"';
-  return s;
+/// A sheet tab name Excel accepts: at most 31 characters, none of
+/// : \ / ? * [ ], no apostrophe at either end, and unique ignoring case.
+String _sheetName(String squad, String month, Set<String> taken) {
+  final clean = squad.replaceAll(RegExp(r'[:\\/?*\[\]\s]+'), ' ');
+  for (var n = 1; ; n++) {
+    final tail = '${n == 1 ? '' : ' $n'} - $month';
+    var head = '';
+    for (final c in clean.characters) {
+      if (head.length + c.length > 31 - tail.length) break;
+      head += c;
+    }
+    head = head.replaceAll(RegExp(r"^[ ']+|[ ']+$"), '');
+    final name = '${head.isEmpty ? 'Squad' : head}$tail';
+    if (taken.add(name.toLowerCase())) return name;
+  }
 }
 
-String _csvRow(Iterable<Object?> cells) => cells.map(_csvCell).join(',');
+/// The attendance workbook: one sheet per month that has at least one
+/// session, with one row per player, one column per training day and a
+/// final TOTAL ATTENDED column counting the P's. Each day is just P
+/// (present) or A (late, excused or absent). The cell is empty if the player
+/// wasn't on the register that day (e.g. they joined the squad later).
+///
+/// Every squad gets its own sheets; when more than one squad has sessions,
+/// the tab names start with the squad ("U10 - October 2026"). Returns null if
+/// there are no sessions at all.
+List<int>? buildAttendanceWorkbook(HuddleStore store) {
+  final squads = [
+    for (final squad in store.allSquads)
+      if (store.sessionsOf(squad.id).isNotEmpty) squad,
+  ];
+  if (squads.isEmpty) return null;
 
-/// The attendance register for one squad: one row per player, one column
-/// per training day, and each cell just "Present" or "Absent". Late counts
-/// as present and excused as absent. The cell is empty if the player wasn't
-/// on the register that day (e.g. they joined the squad later).
-String buildRegisterCsv(HuddleStore store, Squad squad) {
-  // Oldest day first. A squad normally has one session a day, but if there
-  // are more, being at any of them counts as present for that day.
-  final days = <DateTime, List<Session>>{};
-  for (final s in store.sessionsOf(squad.id).reversed) {
-    days.putIfAbsent(dateOnly(s.date), () => []).add(s);
-  }
-  final playerIds = <String>{
-    for (final sessions in days.values)
-      for (final s in sessions) ...store.recordsOf(s.id).keys,
-    for (final p in store.membersOf(squad.id)) p.id,
-  };
-  final players =
-      playerIds.map(store.player).whereType<Player>().toList()
+  final excel = Excel.createExcel();
+  final blank = excel.getDefaultSheet()!;
+  final taken = <String>{};
+  String? first;
+  final monthFmt = DateFormat('MMMM yyyy');
+  final dayFmt = DateFormat('dd/MM/yyyy');
+  final bold = CellStyle(bold: true);
+  final centred = CellStyle(horizontalAlign: HorizontalAlign.Center);
+  final heading = CellStyle(
+    bold: true,
+    horizontalAlign: HorizontalAlign.Center,
+  );
+
+  for (final squad in squads) {
+    // Oldest day first, grouped by month. A squad normally has one session a
+    // day, but if there are more, being present at any of them counts as
+    // present for that day.
+    final months = <DateTime, Map<DateTime, List<Session>>>{};
+    for (final s in store.sessionsOf(squad.id).reversed) {
+      final day = dateOnly(s.date);
+      months
+          .putIfAbsent(DateTime(day.year, day.month), () => {})
+          .putIfAbsent(day, () => [])
+          .add(s);
+    }
+
+    for (final MapEntry(key: month, value: days) in months.entries) {
+      final playerIds = <String>{
+        for (final sessions in days.values)
+          for (final s in sessions) ...store.recordsOf(s.id).keys,
+        for (final p in store.membersOf(squad.id)) p.id,
+      };
+      final players = playerIds.map(store.player).whereType<Player>().toList()
         ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
-  String cell(List<Session> sessions, String playerId) {
-    final statuses = [
-      for (final s in sessions) ?store.statusOf(s.id, playerId),
-    ];
-    if (statuses.isEmpty) return '';
-    return statuses.any((s) => s.attended) ? 'Present' : 'Absent';
+      String mark(List<Session> sessions, String playerId) {
+        final statuses = [
+          for (final s in sessions) ?store.statusOf(s.id, playerId),
+        ];
+        if (statuses.isEmpty) return '';
+        return statuses.contains(AttendanceStatus.present) ? 'P' : 'A';
+      }
+
+      final title = monthFmt.format(month);
+      final name = squads.length == 1
+          ? title
+          : _sheetName(squad.name, title, taken);
+      first ??= name;
+      final sheet = excel[name];
+      void put(int row, int col, CellValue value, [CellStyle? style]) =>
+          sheet.updateCell(
+            CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row),
+            value,
+            cellStyle: style,
+          );
+
+      put(0, 0, TextCellValue('ATTENDANCE REPORT'), bold);
+      put(1, 0, TextCellValue(title));
+      put(3, 0, TextCellValue('Player'), bold);
+      final dates = days.keys.toList();
+      for (final (i, day) in dates.indexed) {
+        put(3, i + 1, TextCellValue(dayFmt.format(day)), heading);
+        sheet.setColumnWidth(i + 1, 12);
+      }
+      put(3, dates.length + 1, TextCellValue('TOTAL ATTENDED'), heading);
+      sheet.setColumnWidth(0, 24);
+      sheet.setColumnWidth(dates.length + 1, 16);
+
+      for (final (r, pl) in players.indexed) {
+        final marks = [for (final s in days.values) mark(s, pl.id)];
+        put(r + 4, 0, TextCellValue(pl.name));
+        for (final (i, m) in marks.indexed) {
+          if (m.isNotEmpty) put(r + 4, i + 1, TextCellValue(m), centred);
+        }
+        put(
+          r + 4,
+          marks.length + 1,
+          IntCellValue(marks.where((m) => m == 'P').length),
+          centred,
+        );
+      }
+    }
   }
 
-  final fmt = DateFormat('yyyy-MM-dd');
-  final buffer = StringBuffer()
-    ..writeln(
-      _csvRow(['Player', for (final day in days.keys) fmt.format(day)]),
-    );
-  for (final pl in players) {
-    buffer.writeln(
-      _csvRow([
-        pl.name,
-        for (final sessions in days.values) cell(sessions, pl.id),
-      ]),
-    );
-  }
-  return buffer.toString();
-}
-
-String _slug(String s) {
-  final slug = s
-      .toLowerCase()
-      .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
-      .replaceAll(RegExp(r'^-|-$'), '');
-  return slug.isEmpty ? 'squad' : slug;
+  excel
+    ..delete(blank)
+    ..setDefaultSheet(first!);
+  return excel.encode();
 }
 
 Future<Directory> _exportDir() async {
@@ -94,21 +167,26 @@ Future<Directory> _exportDir() async {
   return dir.create(recursive: true);
 }
 
-/// Shares one register CSV per squad through the system share sheet.
+/// Shares the attendance workbook through the system share sheet. It's
+/// rebuilt from scratch each time, so it always has every session so far.
 Future<void> shareRegisters(HuddleStore store) async {
   final dir = await _exportDir();
   final stamp = DateFormat('yyyy-MM-dd').format(store.now);
-  final files = <XFile>[];
-  for (final squad in store.allSquads) {
-    if (store.sessionsOf(squad.id).isEmpty) continue;
-    final file = File(p.join(dir.path, '${_slug(squad.name)}-$stamp.csv'));
-    // BOM so Excel opens accented names correctly.
-    await file.writeAsString('﻿${buildRegisterCsv(store, squad)}');
-    files.add(XFile(file.path, mimeType: 'text/csv'));
-  }
-  if (files.isEmpty) return;
+  final bytes = buildAttendanceWorkbook(store);
+  if (bytes == null) return;
+  final file = File(p.join(dir.path, 'Huddle_Attendance.xlsx'));
+  await file.writeAsBytes(bytes);
   await SharePlus.instance.share(
-    ShareParams(files: files, subject: 'Attendance registers ($stamp)'),
+    ShareParams(
+      files: [
+        XFile(
+          file.path,
+          mimeType:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ),
+      ],
+      subject: 'Attendance registers ($stamp)',
+    ),
   );
 }
 

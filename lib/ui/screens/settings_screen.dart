@@ -154,8 +154,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: const Icon(Icons.table_chart_outlined),
                   title: const Text('Export attendance registers'),
                   subtitle: const Text(
-                    'Present or absent for each day, one spreadsheet (CSV) '
-                    'per squad',
+                    'Present or absent for each day, one Excel sheet per '
+                    'month',
                   ),
                   enabled: hasSessions,
                   onTap: () => _run(() => shareRegisters(store)),
